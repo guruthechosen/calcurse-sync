@@ -1,0 +1,75 @@
+#!/bin/sh
+# calcurse pre-load hook — pull remote changes before calcurse reads the data files.
+#
+# Runs on every calcurse launch, so it must be fast and must never prevent
+# calcurse from starting: every failure path exits 0 and leaves the local data
+# untouched. Network calls are bounded by timeout(1) so an unreachable remote
+# costs a few seconds, not a hung TUI.
+
+set -u
+
+DATADIR="${XDG_DATA_HOME:-$HOME/.local/share}/calcurse"
+LOG="$DATADIR/.sync.log"
+NET_TIMEOUT=15
+
+cd "$DATADIR" 2>/dev/null || exit 0
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+git remote get-url origin >/dev/null 2>&1 || exit 0
+
+log() { printf '%s pre-load: %s\n' "$(date -Is)" "$*" >>"$LOG"; }
+
+# Surface a problem inside calcurse itself: a high-priority todo shows up in the
+# TUI on this very launch, since the data files load after this hook returns.
+warn_in_tui() {
+	_line="[1] calcurse-sync: $1"
+	grep -qF -- "$_line" todo 2>/dev/null || printf '%s\n' "$_line" >>todo
+}
+
+# Push anything the last session failed to send (offline at quit, or a race with
+# another machine). Detached and backgrounded so it never delays startup.
+finish() {
+	if [ -n "$(git rev-list --count origin/main..HEAD 2>/dev/null | grep -v '^0$')" ]; then
+		log "local commits unpushed — pushing in background"
+		setsid sh -c "timeout $NET_TIMEOUT git -C '$DATADIR' push -q origin main >>'$LOG' 2>&1" >/dev/null 2>&1 &
+	fi
+	exit 0
+}
+
+# Defensive: post-save normally commits, but a crash or an out-of-band edit can
+# leave changes behind. Merging with a dirty tree fails, so bank them first.
+if ! git diff --quiet HEAD 2>/dev/null || [ -n "$(git status --porcelain)" ]; then
+	git add -A
+	git commit -q -m "calcurse: local changes found at load ($(uname -n))" >>"$LOG" 2>&1
+	log "committed pre-existing local changes"
+fi
+
+if ! timeout "$NET_TIMEOUT" git fetch --quiet origin 2>>"$LOG"; then
+	log "fetch failed (offline?) — continuing with local data"
+	exit 0
+fi
+
+# Nothing to merge if the remote branch does not exist yet.
+git rev-parse --verify --quiet origin/main >/dev/null || exit 0
+
+LOCAL=$(git rev-parse HEAD 2>/dev/null)
+REMOTE=$(git rev-parse origin/main)
+[ "$LOCAL" = "$REMOTE" ] && exit 0
+
+# stdout is redirected too: anything a hook prints lands on the terminal in the
+# instant before the TUI paints, so git's merge chatter must go to the log.
+if git merge --ff-only --quiet origin/main >>"$LOG" 2>&1; then
+	log "fast-forwarded to $(git rev-parse --short HEAD)"
+	finish
+fi
+
+if git merge --no-edit --quiet origin/main >>"$LOG" 2>&1; then
+	log "merged origin/main -> $(git rev-parse --short HEAD)"
+	finish
+fi
+
+# Conflict. Abort so calcurse never sees conflict markers in its data files —
+# they would corrupt its parse. Local data stays authoritative until resolved.
+git merge --abort >>"$LOG" 2>&1
+log "MERGE CONFLICT with origin/main — aborted, local data left intact"
+warn_in_tui "merge conflict, resolve in $DATADIR"
+exit 0

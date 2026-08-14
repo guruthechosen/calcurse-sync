@@ -1,0 +1,36 @@
+#!/bin/sh
+# calcurse post-save hook — commit the saved data files and push them.
+#
+# The commit is synchronous: it is purely local, takes milliseconds, and is the
+# part that actually protects the data. The push is detached and backgrounded so
+# quitting calcurse never waits on the network; if it fails, the next launch's
+# pre-load hook retries it.
+
+set -u
+
+DATADIR="${XDG_DATA_HOME:-$HOME/.local/share}/calcurse"
+LOG="$DATADIR/.sync.log"
+NET_TIMEOUT=15
+
+cd "$DATADIR" 2>/dev/null || exit 0
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+
+log() { printf '%s post-save: %s\n' "$(date -Is)" "$*" >>"$LOG"; }
+
+git add -A
+
+# calcurse fires post-save on every save, including saves that changed nothing.
+# Without this guard the history fills with empty commits.
+git diff --cached --quiet && exit 0
+
+SUMMARY=$(git diff --cached --name-only | tr '\n' ' ' | sed 's/ $//')
+git commit -q -m "calcurse: $SUMMARY ($(uname -n))" >>"$LOG" 2>&1 || {
+	log "commit failed"
+	exit 0
+}
+log "committed $(git rev-parse --short HEAD): $SUMMARY"
+
+git remote get-url origin >/dev/null 2>&1 || exit 0
+setsid sh -c "timeout $NET_TIMEOUT git -C '$DATADIR' push -q origin main >>'$LOG' 2>&1" >/dev/null 2>&1 &
+
+exit 0
