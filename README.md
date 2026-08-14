@@ -243,6 +243,7 @@ tail -20 ~/.local/share/calcurse/.sync.log
 | Changes not appearing on the other machine | Background push didn't land. | `git -C ~/.local/share/calcurse push origin main` — or just relaunch calcurse, `pre-load` retries automatically. |
 | `MERGE CONFLICT ... aborted` | Same item edited on two machines. | See [Conflict handling](#conflict-handling). |
 | Hooks appear to do nothing | Not executable, or symlink target missing. | `ls -lL ~/.config/calcurse/hooks/` — a broken symlink shows as a dangling target. |
+| `error: src refspec main does not match any` | The local branch isn't named `main` — the hooks push to `main` unconditionally. Happens if the datadir was `git init`'d rather than cloned. | `git -C ~/.local/share/calcurse branch -M main`, then push once by hand. |
 | Junk on screen at launch | A hook wrote to stdout/stderr. | All git calls in the hooks must redirect `>>"$LOG" 2>&1`. |
 | History full of empty commits | The `git diff --cached --quiet` guard in `post-save` was removed. | Restore it. |
 
